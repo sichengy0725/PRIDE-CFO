@@ -1,0 +1,25 @@
+model {
+
+  # Likelihood
+  for (n in 1:Nobs) {
+    y[n] ~ dbern(p[n])
+    logit(p[n]) <- beta[dose[n]] + W[id[n]]
+  }
+
+  # Fixed dose effects
+  for (k in 1:K) {
+    beta[k] ~ dnorm(mu[k], tau_beta)
+  }
+  tau_beta <- 1.0 / sigma2_beta   # sigma2_beta is fixed input
+
+  # Subject random effects
+  for (i in 1:Nid) {
+    W[i] ~ dnorm(0.0, tau_w)
+  }
+
+  inv_sigma2_w ~ dgamma(eta, eta)   # Gamma(shape=eta, rate=eta)
+  sigma2_w <- 1.0 / inv_sigma2_w
+  tau_w <- inv_sigma2_w             # since tau_w = 1/sigma2_w
+
+  sigma_w <- sqrt(sigma2_w)
+}
