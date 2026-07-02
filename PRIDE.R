@@ -464,8 +464,7 @@ simulate_PRIDE_design <- function(
   # ---------------- main loop ----------------
   repeat {
     if (stop_trial) break
-    # if (nrow(admin) >= Nmax_eff) break
-    if(length(unique(admin$id)) >= Nmax_eff) break
+    if (nrow(admin) >= Nmax_eff) break
     while (next_new_idx <= N_pat && patients$t_arrival[next_new_idx] < t_decision) {
       waiting <- rbind(waiting, patients[next_new_idx, c("id", "t_arrival"), drop = FALSE])
       next_new_idx <- next_new_idx + 1L
@@ -702,7 +701,12 @@ simulate_PRIDE_design <- function(
       }
     }
     
-    t_decision <- max(admin$t_eval[admin$cohort == cohort_id])
+    cohort_rows <- admin$cohort == cohort_id
+    if (!any(cohort_rows)) {
+      if (verbose) message("No observations added for cohort ", cohort_id, "; stopping trial.")
+      break
+    }
+    t_decision <- max(admin$t_eval[cohort_rows])
     cur_dose <- next_dose
     
     if (verbose) {
