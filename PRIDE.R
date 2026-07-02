@@ -324,9 +324,10 @@ cfo_move <- function(d, ndose, target, y, n, elimi, gammaL, gammaR, eps = 1e-12)
 }
 
 simulate_PRIDE_design <- function(
-    # --- trial size / timing ---
+  # --- trial size / timing ---
   N_pat       = 30L,      # number of unique patients with arrival times generated
   Nmax_eff    = 24L,      # max effective observations (rows in admin)
+  dose_cap    = Inf,      # max effective observations at any dose
   C           = 3L,       # cohort size
   T_assess    = 3,        # assessment window length
   cycle_max   = 3L,       # max cycles per patient
@@ -365,6 +366,10 @@ simulate_PRIDE_design <- function(
 ) {
   if (!is.null(seed)) set.seed(seed)
   stopifnot(length(p_true) == K, length(mu) == K)
+  if (is.null(dose_cap)) dose_cap <- Inf
+  if (length(dose_cap) != 1L || is.na(dose_cap) || dose_cap <= 0) {
+    stop("dose_cap must be a positive scalar or Inf.")
+  }
   
   # ---------------- helpers ----------------
   get_patient_state <- function(admin) {
@@ -465,6 +470,7 @@ simulate_PRIDE_design <- function(
   repeat {
     if (stop_trial) break
     if (nrow(admin) >= Nmax_eff) break
+    if (any(tabulate(admin$dose, nbins = K) >= dose_cap)) break
     while (next_new_idx <= N_pat && patients$t_arrival[next_new_idx] < t_decision) {
       waiting <- rbind(waiting, patients[next_new_idx, c("id", "t_arrival"), drop = FALSE])
       next_new_idx <- next_new_idx + 1L
@@ -662,6 +668,7 @@ simulate_PRIDE_design <- function(
     # ---------------- append cohort outcomes ----------------
     for (pid in new_ids) {
       if (nrow(admin) >= Nmax_eff) break
+      if (sum(admin$dose == next_dose) >= dose_cap) break
       yij <- gen_y(pid, next_dose)
       admin <- rbind(admin, data.frame(
         row_id = nrow(admin) + 1L,
@@ -682,6 +689,7 @@ simulate_PRIDE_design <- function(
       st <- get_patient_state(admin)
       for (pid in ret_ids) {
         if (nrow(admin) >= Nmax_eff) break
+        if (sum(admin$dose == next_dose) >= dose_cap) break
         last <- st[st$id == pid, , drop = FALSE]
         if (nrow(last) != 1) next
         yij <- gen_y(pid, next_dose)
