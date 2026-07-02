@@ -1,5 +1,53 @@
 library(coda)
 source('CFO_tox_utils.R')
+select.mtd <- function(target, y, n, cutoff.eli=0.95)
+{
+  ## isotonic transformation using the pool adjacent violator algorithm (PAVA)
+  pava <- function (x, wt = rep(1, length(x))) 
+  {
+    n <- length(x)
+    if (n <= 1) 
+      return(x)
+    if (any(is.na(x)) || any(is.na(wt))) {
+      stop("Missing values in 'x' or 'wt' not allowed")
+    }
+    lvlsets <- (1:n)
+    repeat {
+      viol <- (as.vector(diff(x)) < 0)
+      if (!(any(viol))) 
+        break
+      i <- min((1:(n - 1))[viol])
+      lvl1 <- lvlsets[i]
+      lvl2 <- lvlsets[i + 1]
+      ilvl <- (lvlsets == lvl1 | lvlsets == lvl2)
+      x[ilvl] <- sum(x[ilvl] * wt[ilvl])/sum(wt[ilvl])
+      lvlsets[ilvl] <- lvl1
+    }
+    x
+  }
+  ## determine whether the dose has been eliminated during the trial
+  ndose=length(n);
+  elimi=rep(0, ndose);
+  for(i in 1:ndose)
+  {
+    if(n[i]>2) {if(1-pbeta(target, y[i]+1, n[i]-y[i]+1)>cutoff.eli) {elimi[i:ndose]=1; break;}}
+  }
+  
+  if(elimi[1]==1) { selectdose=99; } ## no dose should be selected if the first dose is already very toxic
+  else
+  {
+    nadmis = min(max(which(elimi==0)), max(which(n!=0))); ## the highest admissble (or un-eliminated) dose level
+    ## poster mean and variance of toxicity probabilities using beta(0.005, 0.005) as the prior 
+    phat = (y[1:nadmis]+0.005)/(n[1:nadmis]+0.01); 
+    phat.var = (y[1:nadmis]+0.005)*(n[1:nadmis]-y[1:nadmis]+0.005)/((n[1:nadmis]+0.01)^2*(n[1:nadmis]+0.01+1))
+    
+    ## perform the isotonic transformation using PAVA
+    phat = pava(phat, wt=1/phat.var) 
+    phat = phat + (1:nadmis)*1E-10 ## break ties by adding an increasingly small number 
+    selectdose = sort(abs(phat-target), index.return=T)$ix[1]  ## select dose closest to the target as the MTD
+  }
+  return(selectdose);  
+}
 make_pride_jags_data <- function(tmp,
                                  K,
                                  mu,              # length K: logit(c_k)
@@ -177,7 +225,8 @@ cfo_move_pride <- function(cur_dose,
                            gammaR,
                            elim = NULL,
                            use_monotone_pair = TRUE,
-                           eps = 1e-12) {
+                           eps = 1e-12,
+                           CFO = 0) {
   if (!is.matrix(pk_draws)) pk_draws <- as.matrix(pk_draws)
   K <- ncol(pk_draws)
   if (K < 2) stop("pk_draws must have at least 2 dose columns.")
@@ -204,10 +253,9 @@ cfo_move_pride <- function(cur_dose,
     if (any(keep)) {
       OL <- post_odds_over(pL[keep])
       OC_L <- post_odds_over(pC[keep])
-      left_stat <- OC_L / (1-OL)
+      left_stat <- OC_L * OL
     }
   }
-  
   right_stat <- NA_real_
   if (can_right) {
     pC <- pk_draws[, cur_dose]
@@ -216,10 +264,10 @@ cfo_move_pride <- function(cur_dose,
     if (any(keep)) {
       OC_R <- post_odds_over(pC[keep])
       OR <- post_odds_over(pR[keep])
-      right_stat <- (1-OC_R) / OR
+      right_stat <- (1/OC_R)/ OR
     }
   }
-  
+  # browser()
   # If current dose has been eliminated, force de-escalation
   if (elim[cur_dose] == 1L) {
     if (cur_dose == 1L) return(0L)
@@ -239,7 +287,41 @@ cfo_move_pride <- function(cur_dose,
     return(cur_dose)
   }
 }
-
+cfo_move <- function(d, ndose, target, y, n, elimi, gammaL, gammaR, eps = 1e-12) {
+  if (d < 1 || d > ndose) stop("d out of range.")
+  L <- d - 1L
+  R <- d + 1L
+  
+  can_left  <- (L >= 1L)
+  can_right <- (R <= ndose)
+  
+  alp.prior <- target
+  bet.prior <- 1 - target
+  
+  OL <- if (can_left) {
+    OR.values(target, y[L], n[L], y[d], n[d], alp.prior, bet.prior, type = "L")
+  } else {
+    NA_real_
+  }
+  
+  OR <- if (can_right) {
+    OR.values(target, y[d], n[d], y[R], n[R], alp.prior, bet.prior, type = "R")
+  } else {
+    NA_real_
+  }
+  
+  go_left  <- can_left  && (OL > gammaL)
+  go_right <- can_right && (OR > gammaR)
+  
+  if (go_left && !go_right) {
+    return(max(d - 1L, 1L))
+  } else if (!go_left && go_right) {
+    if (elimi[R] == 0) return(R)
+    return(d)
+  } else {
+    return(d)
+  }
+}
 
 simulate_PRIDE_design <- function(
     # --- trial size / timing ---
@@ -278,7 +360,8 @@ simulate_PRIDE_design <- function(
   
   # --- misc ---
   seed = NULL,
-  verbose = FALSE
+  verbose = FALSE,
+  CFO = TRUE
 ) {
   if (!is.null(seed)) set.seed(seed)
   stopifnot(length(p_true) == K, length(mu) == K)
@@ -381,8 +464,8 @@ simulate_PRIDE_design <- function(
   # ---------------- main loop ----------------
   repeat {
     if (stop_trial) break
-    if (nrow(admin) >= Nmax_eff) break
-    
+    # if (nrow(admin) >= Nmax_eff) break
+    if(length(unique(admin$id)) >= Nmax_eff) break
     while (next_new_idx <= N_pat && patients$t_arrival[next_new_idx] < t_decision) {
       waiting <- rbind(waiting, patients[next_new_idx, c("id", "t_arrival"), drop = FALSE])
       next_new_idx <- next_new_idx + 1L
@@ -390,48 +473,76 @@ simulate_PRIDE_design <- function(
     
     dat_dec <- admin[admin$t_eval <= t_decision, c("id", "dose", "y"), drop = FALSE]
     
-    post_dec <- get_pride_posterior(
-      tmp = dat_dec,
-      K = K,
-      mu = mu,
-      TARGET = TARGET,
-      model_file = model_file,
-      sigma2_beta = sigma2_beta,
-      eta = eta,
-      pk_method = pk_method,
-      n_mc_w = n_mc_w,
-      m_use = m_use,
-      n.chains = n.chains,
-      n.adapt = n.adapt,
-      n.burn = n.burn,
-      n.iter = n.iter,
-      thin = thin
-    )
-    
     n_left  <- if (cur_dose > 1L) sum(dat_dec$dose == (cur_dose - 1L)) else 0L
     n_curr  <- sum(dat_dec$dose == cur_dose)
     n_right <- if (cur_dose < K) sum(dat_dec$dose == (cur_dose + 1L)) else 0L
-    
+    n_by_dose <- tabulate(dat_dec$dose, nbins = K)
+    y_by_dose <- tabulate(dat_dec$dose[dat_dec$y == 1], nbins = K)
     # model-based elimination rule
-    post_overtox_curr <- post_dec$prob_overtox[cur_dose]
-    if (n_curr >= 3L && post_overtox_curr > cutoff) {
-      elimi[cur_dose:K] <- 1L
-      if (cur_dose == 1L) {
-        decisions <- rbind(decisions, data.frame(
-          cohort = cohort_id + 1L,
-          t_decision = t_decision,
-          cur_dose = cur_dose,
-          next_dose = cur_dose,
-          stop = 1L
-        ))
-        stop_trial <- TRUE
-        if (verbose) {
-          message("STOP: dose 1 eliminated. Pr(overtox)=", round(post_overtox_curr, 4))
+    if(CFO == TRUE){
+      
+      ## determine if the current dose should be eliminated
+      post_overtox <- 1 - pbeta(TARGET, 
+                                TARGET + y_by_dose[cur_dose], 
+                                1 - TARGET + n_by_dose[cur_dose] - y_by_dose[cur_dose])
+      if (n_by_dose[cur_dose] >= 3L && post_overtox > cutoff) {
+        elimi[cur_dose:K] <- 1L
+        if (cur_dose == 1L) {
+          decisions <- rbind(decisions, data.frame(
+            cohort = cohort_id + 1L,
+            t_decision = t_decision,
+            cur_dose = cur_dose,
+            next_dose = cur_dose,
+            stop = 1L
+          ))
+          stop_trial <- TRUE
+          if (verbose) {
+            message("STOP: dose 1 eliminated under CFO rule. Pr(overtox)=",
+                    round(post_overtox, 4))
+          }
+          break
         }
-        break
+      }
+      
+    } else {
+      post_dec <- get_pride_posterior(
+        tmp = dat_dec,
+        K = K,
+        mu = mu,
+        TARGET = TARGET,
+        model_file = model_file,
+        sigma2_beta = sigma2_beta,
+        eta = eta,
+        pk_method = pk_method,
+        n_mc_w = n_mc_w,
+        m_use = m_use,
+        n.chains = n.chains,
+        n.adapt = n.adapt,
+        n.burn = n.burn,
+        n.iter = n.iter,
+        thin = thin
+      )
+
+      post_overtox_curr <- post_dec$prob_overtox[cur_dose]
+      if (post_overtox_curr > cutoff) {
+        elimi[cur_dose:K] <- 1L
+        if (cur_dose == 1L) {
+          decisions <- rbind(decisions, data.frame(
+            cohort = cohort_id + 1L,
+            t_decision = t_decision,
+            cur_dose = cur_dose,
+            next_dose = cur_dose,
+            stop = 1L
+          ))
+          stop_trial <- TRUE
+          if (verbose) {
+            message("STOP: dose 1 eliminated. Pr(overtox)=", round(post_overtox_curr, 4))
+          }
+          break
+        }
       }
     }
-    
+   
     alp.prior <- TARGET
     bet.prior <- 1 - TARGET
     
@@ -462,16 +573,29 @@ simulate_PRIDE_design <- function(
         alp.prior = alp.prior, bet.prior = bet.prior
       )$gamma
     }
+    if(CFO == TRUE){
+      next_dose <- cfo_move(
+        d = cur_dose,
+        ndose = K,
+        target = TARGET,
+        y = y_by_dose , n = n_by_dose,
+        elimi = elimi,
+        gammaL = gammaL,
+        gammaR = gammaR
+      )
     
-    next_dose <- cfo_move_pride(
-      cur_dose = cur_dose,
-      pk_draws = post_dec$pk_draws,
-      TARGET = TARGET,
-      gammaL = gammaL,
-      gammaR = gammaR,
-      elim = elimi,
-      use_monotone_pair = TRUE
-    )
+    } else {
+      next_dose <- cfo_move_pride(
+        cur_dose = cur_dose,
+        pk_draws = post_dec$pk_draws,
+        TARGET = TARGET,
+        gammaL = gammaL,
+        gammaR = gammaR,
+        elim = elimi,
+        use_monotone_pair = FALSE
+      )
+    }
+    
     
     if (next_dose == 0L) {
       decisions <- rbind(decisions, data.frame(
@@ -612,47 +736,61 @@ simulate_PRIDE_design <- function(
   t_end <- max(admin$t_eval, na.rm = TRUE)
   dat_final <- admin[admin$t_eval <= t_end, c("id", "dose", "y"), drop = FALSE]
   
-  post_final <- get_pride_posterior(
-    tmp = dat_final,
-    K = K,
-    mu = mu,
-    TARGET = TARGET,
-    model_file = model_file,
-    sigma2_beta = sigma2_beta,
-    eta = eta,
-    pk_method = "mc",
-    n_mc_w = 50,
-    m_use = 1000,
-    n.chains = n.chains,
-    n.adapt = n.adapt,
-    n.burn = n.burn,
-    n.iter = n.iter,
-    thin = thin
-  )
-  
-  posttox_iso <- Iso::pava(post_final$posttox)
-  
-  # apply final admissibility using the same model-based elimination idea
-  n_by_dose <- tabulate(dat_final$dose, nbins = K)
-  elim_final <- elimi
-  for (d in seq_len(K)) {
-    if (n_by_dose[d] >= 3L && post_final$prob_overtox[d] > cutoff) {
-      elim_final[d:K] <- 1L
-      break
+  if(CFO == TRUE){
+    post_final <- NULL
+    posttox_iso <- rep(NA_real_, K)
+    elim_final <- elimi
+    
+    n_by_dose <- tabulate(dat_final$dose, nbins = K)
+    y_by_dose <- tabulate(dat_final$dose[dat_final$y == 1], nbins = K)
+    final_dose = select.mtd(TARGET, y_by_dose, n_by_dose, cutoff)
+    
+    if(final_dose == 99){elim_final <- rep(1,K)}
+  } else {
+    post_final <- get_pride_posterior(
+      tmp = dat_final,
+      K = K,
+      mu = mu,
+      TARGET = TARGET,
+      model_file = model_file,
+      sigma2_beta = sigma2_beta,
+      eta = eta,
+      pk_method = "mc",
+      n_mc_w = 50,
+      m_use = 1000,
+      n.chains = n.chains,
+      n.adapt = n.adapt,
+      n.burn = n.burn,
+      n.iter = n.iter,
+      thin = thin
+    )
+    
+    posttox_iso <- Iso::pava(post_final$posttox)
+    
+    # apply final admissibility using the same model-based elimination idea
+    n_by_dose <- tabulate(dat_final$dose, nbins = K)
+    elim_final <- elimi
+    for (d in seq_len(K)) {
+      if (post_final$prob_overtox[d] > cutoff) {
+        elim_final[d:K] <- 1L
+        break
+      }
+    }
+    
+    dvec <- abs(posttox_iso - TARGET)
+    admissible <- which(elim_final == 0L)
+    
+    if (length(admissible) == 0L) {
+      final_dose <- 99L
+    } else {
+      dvec2 <- rep(Inf, K)
+      dvec2[admissible] <- dvec[admissible]
+      final_dose <- which(dvec2 == min(dvec2))[1]   # tie-break: lower dose
+      final_dose <- as.integer(final_dose)
     }
   }
   
-  dvec <- abs(posttox_iso - TARGET)
-  admissible <- which(elim_final == 0L)
   
-  if (length(admissible) == 0L) {
-    final_dose <- 99L
-  } else {
-    dvec2 <- rep(Inf, K)
-    dvec2[admissible] <- dvec[admissible]
-    final_dose <- which(dvec2 == min(dvec2))[1]   # tie-break: lower dose
-    final_dose <- as.integer(final_dose)
-  }
   
   list(
     admin = admin,

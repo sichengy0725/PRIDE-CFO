@@ -19,7 +19,7 @@ sce6 <- c(0.45, 0.55, 0.65, 0.75, 0.85)
 
 out1 <- simulate_PRIDE_design(
   N_pat = 30,
-  Nmax_eff = 30,
+  Nmax_eff = 24,
   C = 3,
   T_assess = 3,
   cycle_max = 3,
@@ -28,11 +28,12 @@ out1 <- simulate_PRIDE_design(
   sigma_true_w = 0.4,
   K = K,
   mu = mu,
-  TARGET = 0.30,
+  TARGET = 0.33,
   cutoff = 0.95,
   model_file = "PRIDE.bug",
-  seed = job_i,
-  verbose = TRUE
+  seed = 1,
+  verbose = TRUE,
+  CFO = FALSE
 )
 
 out2 <- simulate_PRIDE_design(
@@ -100,7 +101,7 @@ out5 <- simulate_PRIDE_design(
   TARGET = 0.30,
   cutoff = 0.95,
   model_file = "PRIDE.bug",
-  seed = job_i,
+  seed = 1,
   verbose = TRUE
 )
 out6 <- simulate_PRIDE_design(
@@ -117,6 +118,6 @@ out6 <- simulate_PRIDE_design(
   TARGET = 0.30,
   cutoff = 0.95,
   model_file = "PRIDE.bug",
-  seed = job_i,
+  seed = 1,
   verbose = TRUE
 )
