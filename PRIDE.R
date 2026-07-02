@@ -778,7 +778,7 @@ simulate_PRIDE_design <- function(
     }
     
     dvec <- abs(posttox_iso - TARGET)
-    admissible <- which(elim_final == 0L)
+    admissible <- which((elim_final == 0L) & (n_by_dose > 0L))
     
     if (length(admissible) == 0L) {
       final_dose <- 99L
