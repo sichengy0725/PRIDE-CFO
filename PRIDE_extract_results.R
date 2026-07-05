@@ -22,7 +22,7 @@ summarize_one_scenario <- function(res_dir,
                                    stop_code = 99L) {
   true_mtd <- which.min(abs(truth - target))
   sel <- integer(ndose + 1L)  # 1..ndose = dose selected, (ndose+1)=STOP
-  pat <- integer(ndose)       # patient counts by highest dose received
+  pat <- integer(ndose)       # patient-dose counts
   sel_correct <- 0L
   sel_overdose <- 0L
   pat_mtd <- 0L
@@ -54,15 +54,27 @@ summarize_one_scenario <- function(res_dir,
       admin2 <- admin[!is.na(admin$id) & !is.na(admin$dose), c("id", "dose"), drop = FALSE]
       
       if (nrow(admin2) > 0L) {
-        max_dose_by_pt <- tapply(admin2$dose, admin2$id, max)
-        max_dose_by_pt <- as.integer(max_dose_by_pt)
-        max_dose_by_pt <- max_dose_by_pt[max_dose_by_pt >= 1L & max_dose_by_pt <= ndose]
+        # Highest-dose-received approach:
+        # max_dose_by_pt <- tapply(admin2$dose, admin2$id, max)
+        # max_dose_by_pt <- as.integer(max_dose_by_pt)
+        # max_dose_by_pt <- max_dose_by_pt[max_dose_by_pt >= 1L & max_dose_by_pt <= ndose]
+        #
+        # if (length(max_dose_by_pt) > 0L) {
+        #   pat <- pat + tabulate(max_dose_by_pt, nbins = ndose)
+        #   pat_mtd <- pat_mtd + sum(max_dose_by_pt == true_mtd)
+        #   pat_overdose <- pat_overdose + sum(max_dose_by_pt > true_mtd)
+        #   pat_total <- pat_total + length(max_dose_by_pt)
+        # }
+
+        patient_doses <- unique(admin2)
+        dose_received <- as.integer(patient_doses$dose)
+        dose_received <- dose_received[dose_received >= 1L & dose_received <= ndose]
         
-        if (length(max_dose_by_pt) > 0L) {
-          pat <- pat + tabulate(max_dose_by_pt, nbins = ndose)
-          pat_mtd <- pat_mtd + sum(max_dose_by_pt == true_mtd)
-          pat_overdose <- pat_overdose + sum(max_dose_by_pt > true_mtd)
-          pat_total <- pat_total + length(max_dose_by_pt)
+        if (length(dose_received) > 0L) {
+          pat <- pat + tabulate(dose_received, nbins = ndose)
+          pat_mtd <- pat_mtd + sum(dose_received == true_mtd)
+          pat_overdose <- pat_overdose + sum(dose_received > true_mtd)
+          pat_total <- pat_total + length(dose_received)
         }
       }
     }
